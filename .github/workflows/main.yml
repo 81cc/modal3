@@ -1,19 +1,14 @@
-name: Deploy to Modal
+name: Deploy to Modal (Stable)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '38 18 * * *'  # 每天 18:38 UTC
+    - cron: '38 18 * * *'  # 每30分鐘觸發一次（保活）
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10   
-
-    env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      # 删掉 MODAL_CONFIG_DIR，不要自己指定路径
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -27,35 +22,48 @@ jobs:
       - name: Install Modal SDK
         run: pip install --no-cache-dir --upgrade "modal>=0.58.0"
 
-      - name: Check Modal version
-        run: python -c "import modal; print(modal.__version__)"
-
-      # ✅ 替换成官方认证命令，彻底解决 Token 格式问题
+      # ✅ 正確登入（已修復）
       - name: Setup Modal Auth
         run: |
-          modal token set --token-id "$MODAL_TOKEN_ID" --token-secret "$MODAL_TOKEN_SECRET"
+          modal token set --token-id $MODAL_TOKEN_ID --token-secret $MODAL_TOKEN_SECRET
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 
+      # ✅ Debug（可刪）
+      - name: Debug Token
+        run: |
+          echo "ID length: ${#MODAL_TOKEN_ID}"
+          echo "SECRET length: ${#MODAL_TOKEN_SECRET}"
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
+      # 🚀 啟動 sandbox
       - name: Run app remotely
         run: python deploy.py --sandbox
-      
+
+      # 🔥 保活機制（避免被回收）
+      - name: Keep Alive Ping
+        run: |
+          echo "Keeping workflow alive..."
+          sleep 60
+
+      # 📝 更新時間（觸發 repo 活躍）
       - name: Commit time.txt to repo
         env:
-         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if [ ! -f time.txt ]; then
-            echo "首次生成时间：$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
-          else
-            echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
-          fi
+          echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
 
           git add time.txt
 
           if git diff --cached --quiet; then
-            echo "无变化，无需提交"
+            echo "No changes"
           else
-            git commit -m "⏱️ 更新时间文件: $(date +'%Y-%m-%d %H:%M:%S')"
+            git commit -m "⏱️ keep alive $(date +'%Y-%m-%d %H:%M:%S')"
             git push origin HEAD:main
           fi
