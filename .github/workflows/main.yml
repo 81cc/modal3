@@ -1,86 +1,69 @@
-name: Deploy to Modal (ai-inferbox Sandbox - Stable)
+name: Deploy to Modal (Stable)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '38 18 * * *'     # UTC 每天 18:38（北京時間約次日 02:38）
-
-permissions:
-  contents: write             # 只給 push time.txt 需要的權限
+    - cron: '38 18 * * *'  # 每30分鐘觸發一次（保活）
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: '3.10'
 
-      - name: Install Modal SDK (固定版本)
-        run: pip install --no-cache-dir "modal==1.4.0"
+      - name: Install Modal SDK
+        run: pip install --no-cache-dir --upgrade "modal>=0.58.0"
 
-      - name: Check Modal version
-        run: python -c "import modal; print('Modal SDK version:', modal.__version__)"
-
-      # ✅ Modal 認證（最穩定寫法）
-      - name: Setup Modal Authentication
+      # ✅ 正確登入（已修復）
+      - name: Setup Modal Auth
         run: |
-          modal token set \
-            --token-id "${{ secrets.MODAL_TOKEN_ID }}" \
-            --token-secret "${{ secrets.MODAL_TOKEN_SECRET }}"
-          echo "✅ Modal token set successfully"
+          modal token set --token-id $MODAL_TOKEN_ID --token-secret $MODAL_TOKEN_SECRET
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 
-      # Debug（建議暫時保留，確認 token 長度正常）
-      - name: Debug Token Length
+      # ✅ Debug（可刪）
+      - name: Debug Token
         run: |
-          echo "MODAL_TOKEN_ID length: ${#MODAL_TOKEN_ID}"
-          echo "MODAL_TOKEN_SECRET length: ${#MODAL_TOKEN_SECRET}"
+          echo "ID length: ${#MODAL_TOKEN_ID}"
+          echo "SECRET length: ${#MODAL_TOKEN_SECRET}"
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 
-      # 🚀 核心部署步驟（新建 Sandbox + 自動終止舊 Sandbox）
-      - name: Run Deployment (New Sandbox + Terminate Old)
+      # 🚀 啟動 sandbox
+      - name: Run app remotely
         run: python deploy.py --sandbox
-        continue-on-error: false     # 如果部署失敗就讓 workflow 失敗
-        env:
-          PYTHONUNBUFFERED: 1
 
-      # 📝 更新時間檔並 push（保持 repository 活躍）
-      - name: Update deployment time
+      # 🔥 保活機制（避免被回收）
+      - name: Keep Alive Ping
+        run: |
+          echo "Keeping workflow alive..."
+          sleep 60
+
+      # 📝 更新時間（觸發 repo 活躍）
+      - name: Commit time.txt to repo
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          CURRENT_TIME=$(date +'%Y-%m-%d %H:%M:%S UTC')
-          echo "Last successful deployment: $CURRENT_TIME" > time.txt
-          echo "App: ai-inferbox (Sandbox Mode)" >> time.txt
+          echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
 
           git add time.txt
 
           if git diff --cached --quiet; then
-            echo "No changes to time.txt"
+            echo "No changes"
           else
-            git commit -m "⏱️ Deployment update: $CURRENT_TIME"
-            git push origin HEAD:${{ github.ref_name }}
-            echo "✅ time.txt updated and pushed"
+            git commit -m "⏱️ keep alive $(date +'%Y-%m-%d %H:%M:%S')"
+            git push origin HEAD:main
           fi
-
-      - name: Deployment Summary
-        run: |
-          echo "🎉 Workflow completed!"
-          echo "App: ai-inferbox"
-          echo "Mode: Sandbox (daily restart)"
-          echo "Check dashboard: https://modal.com/apps"
