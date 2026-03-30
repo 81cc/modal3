@@ -1,63 +1,75 @@
-name: Deploy to Modal (Stable)
+name: Deploy to Modal (ai-inferbox Sandbox)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:          # 手動觸發
   schedule:
-    - cron: '38 10 * * *'  # 每天 北京时间 18:38 一次
+    - cron: '38 18 * * *'     # UTC 每天 18:38（北京時間次日 02:38）
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8        # 縮短 timeout，夠用即可
+
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_CONFIG_DIR: /home/runner/.modal
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'      # 建議升級到 3.11 或 3.12
+          cache: 'pip'
 
-      - name: Install Modal SDK & jq
+      - name: Install Modal SDK
+        run: pip install --no-cache-dir --upgrade "modal>=1.4.0"
+
+      - name: Check Modal version
+        run: python -c "import modal; print('Modal version:', modal.__version__)"
+
+      - name: Inject Modal Token
         run: |
-          pip install --no-cache-dir --upgrade "modal>=0.58.0"
-          sudo apt-get update && sudo apt-get install -y jq
+          mkdir -p $MODAL_CONFIG_DIR
+          cat > $MODAL_CONFIG_DIR/token.toml << EOF
+          [default]
+          token_id = "$MODAL_TOKEN_ID"
+          token_secret = "$MODAL_TOKEN_SECRET"
+          EOF
+          echo "✅ Modal token configured"
 
-      - name: Setup Modal Auth
-        run: |
-          modal token set --token-id $MODAL_TOKEN_ID --token-secret $MODAL_TOKEN_SECRET
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-
-      # 🔥 关键：只杀所有 LIVE 状态的 ai-inferbox 沙盒
-      - name: Stop ALL live ai-inferbox sandboxes
-        run: |
-          modal sandbox list --json | jq -r '
-            .[] | 
-            select(.status == "live" and (.description | contains("ai-inferbox"))) | 
-            .sandbox_id
-          ' | while read id; do
-            if [ -n "$id" ]; then
-              echo "Stopping LIVE sandbox: $id"
-              modal sandbox stop "$id"
-              sleep 2
-            fi
-          done
-
-      # 🚀 启动新沙盒
-      - name: Run app remotely
+      - name: Run Deployment (Create new Sandbox + Terminate old ones)
         run: python deploy.py --sandbox
+        env:
+          PYTHONUNBUFFERED: 1          # 讓 log 即時輸出
 
-      # 📌 轻量保活提交
-      - name: Commit time.txt
+      - name: Update deployment time
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
+
+          CURRENT_TIME=$(date +'%Y-%m-%d %H:%M:%S UTC')
+          echo "Deployment completed at: $CURRENT_TIME" > time.txt
+          echo "Sandbox App: ai-inferbox" >> time.txt
+
           git add time.txt
-          git diff --cached --quiet || git commit -m "⏱️ keep alive"
-          git push origin HEAD:main
+
+          if git diff --cached --quiet; then
+            echo "No changes to time.txt"
+          else
+            git commit -m "⏱️ Update deployment time: $CURRENT_TIME"
+            git push origin HEAD:${{ github.ref_name }}
+            echo "✅ time.txt updated and pushed"
+          fi
+
+      - name: Deployment Summary
+        run: |
+          echo "🎉 Deployment finished successfully!"
+          echo "App Name: ai-inferbox"
+          echo "Schedule: Daily at UTC 18:38"
+          echo "Check Modal Dashboard: https://modal.com/apps"
